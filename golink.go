@@ -519,10 +519,16 @@ func (s *Server) searchResults(links []*Link) []searchResult {
 	return results
 }
 
+type similarLink struct {
+	Short     string
+	NumClicks int
+}
+
 // homeData is the data used by homeTmpl.
 type homeData struct {
 	Short    string
 	Long     string
+	Similar  []similarLink
 	Clicks   []visitData
 	XSRF     string
 	ReadOnly bool
@@ -719,14 +725,21 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-func (s *Server) serveHome(w http.ResponseWriter, r *http.Request, short string) {
+func (s *Server) serveHome(w http.ResponseWriter, r *http.Request, short string, similar []string) {
 	var clicks []visitData
+	var similarLinks []similarLink
 
 	s.stats.mu.Lock()
 	for short, numClicks := range s.stats.clicks {
 		clicks = append(clicks, visitData{
 			Short:     short,
 			NumClicks: numClicks,
+		})
+	}
+	for _, short := range similar {
+		similarLinks = append(similarLinks, similarLink{
+			Short:     short,
+			NumClicks: s.stats.clicks[short],
 		})
 	}
 	s.stats.mu.Unlock()
@@ -763,6 +776,7 @@ func (s *Server) serveHome(w http.ResponseWriter, r *http.Request, short string)
 	s.homeTmpl.Execute(w, homeData{
 		Short:    short,
 		Long:     long,
+		Similar:  similarLinks,
 		Clicks:   clicks,
 		XSRF:     xsrftoken.Generate(s.xsrfKey, cu.login, newShortName),
 		ReadOnly: s.readonly,
@@ -798,7 +812,7 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
 		switch r.Method {
 		case "GET":
-			s.serveHome(w, r, "")
+			s.serveHome(w, r, "", nil)
 		case "POST":
 			s.serveSave(w, r)
 		}
@@ -822,9 +836,16 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if errors.Is(err, fs.ErrNotExist) {
+		similar, err := s.db.FindSimilar(short)
+		if err != nil {
+			// Suggestions are a nice-to-have, don't break things if they fail
+			// to load.
+			similar = nil
+		}
+
 		clickNotFound.WithLabelValues(short).Inc()
 		w.WriteHeader(http.StatusNotFound)
-		s.serveHome(w, r, short)
+		s.serveHome(w, r, short, similar)
 		return
 	}
 	if err != nil {
