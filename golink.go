@@ -299,10 +299,16 @@ type visitData struct {
 	NumClicks int
 }
 
+type similarLink struct {
+	Short     string
+	NumClicks int
+}
+
 // homeData is the data used by homeTmpl.
 type homeData struct {
 	Short    string
 	Long     string
+	Similar  []similarLink
 	Clicks   []visitData
 	XSRF     string
 	ReadOnly bool
@@ -493,14 +499,21 @@ func serveHandler() http.Handler {
 	})
 }
 
-func serveHome(w http.ResponseWriter, r *http.Request, short string) {
+func serveHome(w http.ResponseWriter, r *http.Request, short string, similar []string) {
 	var clicks []visitData
+	var similarLinks []similarLink
 
 	stats.mu.Lock()
 	for short, numClicks := range stats.clicks {
 		clicks = append(clicks, visitData{
 			Short:     short,
 			NumClicks: numClicks,
+		})
+	}
+	for _, short := range similar {
+		similarLinks = append(similarLinks, similarLink{
+			Short:     short,
+			NumClicks: stats.clicks[short],
 		})
 	}
 	stats.mu.Unlock()
@@ -537,6 +550,7 @@ func serveHome(w http.ResponseWriter, r *http.Request, short string) {
 	homeTmpl.Execute(w, homeData{
 		Short:    short,
 		Long:     long,
+		Similar:  similarLinks,
 		Clicks:   clicks,
 		XSRF:     xsrftoken.Generate(xsrfKey, cu.login, newShortName),
 		ReadOnly: *readonly,
@@ -587,7 +601,7 @@ func serveGo(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
 		switch r.Method {
 		case "GET":
-			serveHome(w, r, "")
+			serveHome(w, r, "", nil)
 		case "POST":
 			serveSave(w, r)
 		}
@@ -611,9 +625,16 @@ func serveGo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if errors.Is(err, fs.ErrNotExist) {
+		similar, err := db.FindSimilar(short)
+		if err != nil {
+			// Suggestions are a nice-to-have, don't break things if they fail
+			// to load.
+			similar = nil
+		}
+
 		clickNotFound.WithLabelValues(short).Inc()
 		w.WriteHeader(http.StatusNotFound)
-		serveHome(w, r, short)
+		serveHome(w, r, short, similar)
 		return
 	}
 	if err != nil {
