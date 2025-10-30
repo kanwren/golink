@@ -6,6 +6,7 @@ package golink
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -15,7 +16,8 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/agext/levenshtein"
+	"modernc.org/sqlite"
 	"tailscale.com/tstime"
 )
 
@@ -49,6 +51,28 @@ type SQLiteDB struct {
 
 //go:embed schema.sql
 var sqlSchema string
+
+// TODO: use proper type error handling here
+var similarityErr = errors.New("similarity calculation error")
+
+func init() {
+	sqlite.MustRegisterFunction("similarity", &sqlite.FunctionImpl{
+		NArgs:         2,
+		Deterministic: true,
+		Scalar: func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			if args[0] == nil || args[1] == nil {
+				return nil, similarityErr
+			}
+			l, lOk := args[0].(string)
+			r, rOk := args[1].(string)
+			if !lOk || !rOk {
+				return nil, similarityErr
+			}
+
+			return levenshtein.Similarity(l, r, nil), nil
+		},
+	})
+}
 
 // NewSQLiteDB returns a new SQLiteDB that stores links in a SQLite database stored at f.
 func NewSQLiteDB(f string) (*SQLiteDB, error) {
@@ -120,6 +144,26 @@ func (s *SQLiteDB) Load(short string) (*Link, error) {
 	link.Created = time.Unix(created, 0).UTC()
 	link.LastEdit = time.Unix(lastEdit, 0).UTC()
 	return link, nil
+}
+
+func (s *SQLiteDB) FindSimilar(short string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var links []string
+	rows, err := s.db.Query("SELECT Short FROM (SELECT Short, similarity(?, ID) as Score FROM Links WHERE Score > 0.5 ORDER BY Score DESC LIMIT 10)", linkID(short))
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var link string
+		err := rows.Scan(&link)
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
 }
 
 // Save saves a Link.
