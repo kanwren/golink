@@ -610,6 +610,19 @@ func serveOpenSearch(w http.ResponseWriter, _ *http.Request) {
 	opensearchTmpl.Execute(w, nil)
 }
 
+func cleanShort(short string) (string, bool) {
+	s := short
+
+	// Trim spaces as a convenience, instead of hyphens
+	s = strings.ReplaceAll(s, " ", "")
+
+	// Trim common punctuation from the end and try again.
+	// This catches auto-linking and copy/paste issues that include punctuation.
+	s = strings.TrimRight(s, ".,()[]{}")
+
+	return s, s != short
+}
+
 func serveGo(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
 		switch r.Method {
@@ -631,9 +644,7 @@ func serveGo(w http.ResponseWriter, r *http.Request) {
 
 	link, err := db.Load(short)
 	if errors.Is(err, fs.ErrNotExist) {
-		// Trim common punctuation from the end and try again.
-		// This catches auto-linking and copy/paste issues that include punctuation.
-		if s := strings.TrimRight(short, ".,()[]{}"); short != s {
+		if s, cleaned := cleanShort(short); cleaned {
 			short = s
 			link, err = db.Load(short)
 		}
@@ -700,6 +711,7 @@ type detailData struct {
 
 func serveDetail(w http.ResponseWriter, r *http.Request) {
 	short := strings.TrimPrefix(r.URL.Path, "/.detail/")
+	short, _ = cleanShort(short)
 
 	link, err := db.Load(short)
 	if errors.Is(err, fs.ErrNotExist) {
