@@ -299,6 +299,11 @@ type visitData struct {
 	NumClicks int
 }
 
+type linkData struct {
+	Link      *Link
+	NumClicks int
+}
+
 type similarLink struct {
 	Short     string
 	NumClicks int
@@ -572,7 +577,14 @@ func serveAll(w http.ResponseWriter, _ *http.Request) {
 		return links[i].Short < links[j].Short
 	})
 
-	allTmpl.Execute(w, links)
+	linksWithStats := make([]linkData, len(links))
+	stats.mu.Lock()
+	for i, link := range links {
+		linksWithStats[i] = linkData{Link: link, NumClicks: stats.clicks[link.Short]}
+	}
+	stats.mu.Unlock()
+
+	allTmpl.Execute(w, linksWithStats)
 }
 
 func serveHelp(w http.ResponseWriter, _ *http.Request) {
