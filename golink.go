@@ -814,9 +814,7 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request) {
 
 	link, err := s.db.Load(short)
 	if errors.Is(err, fs.ErrNotExist) {
-		// Trim common punctuation from the end and try again.
-		// This catches auto-linking and copy/paste issues that include punctuation.
-		if trimmed := strings.TrimRight(short, ".,()[]{}"); short != trimmed {
+		if trimmed, changed := cleanShort(short); changed {
 			short = trimmed
 			link, err = s.db.Load(short)
 		}
@@ -867,6 +865,19 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusFound)
 }
 
+func cleanShort(short string) (string, bool) {
+	s := short
+
+	// Trim spaces as a convenience, instead of hyphens
+	s = strings.ReplaceAll(s, " ", "")
+
+	// Trim common punctuation from the end and try again.
+	// This catches auto-linking and copy/paste issues that include punctuation.
+	s = strings.TrimRight(s, ".,()[]{}")
+
+	return s, s != short
+}
+
 // acceptHTML returns whether the request can accept a text/html response.
 func acceptHTML(r *http.Request) bool {
 	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
@@ -883,6 +894,7 @@ type detailData struct {
 
 func (s *Server) serveDetail(w http.ResponseWriter, r *http.Request) {
 	short := strings.TrimPrefix(r.URL.Path, "/.detail/")
+	short, _ = cleanShort(short)
 
 	link, err := s.db.Load(short)
 	if errors.Is(err, fs.ErrNotExist) {
