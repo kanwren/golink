@@ -337,6 +337,11 @@ type visitData struct {
 	NumClicks int
 }
 
+type linkWithStats struct {
+	Link      *Link
+	NumClicks int
+}
+
 type similarLink struct {
 	Short     string
 	NumClicks int
@@ -613,7 +618,14 @@ func serveAll(w http.ResponseWriter, _ *http.Request) {
 		return links[i].Short < links[j].Short
 	})
 
-	searchTmpl.Execute(w, links)
+	linksWithStats := make([]linkWithStats, len(links))
+	stats.mu.Lock()
+	for i, link := range links {
+		linksWithStats[i] = linkWithStats{Link: link, NumClicks: stats.clicks[link.Short]}
+	}
+	stats.mu.Unlock()
+
+	searchTmpl.Execute(w, linksWithStats)
 }
 
 func serveHelp(w http.ResponseWriter, _ *http.Request) {
@@ -803,7 +815,15 @@ func serveSearch(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(links, func(i, j int) bool {
 		return links[i].Short < links[j].Short
 	})
-	searchTmpl.Execute(w, links)
+
+	linksWithStats := make([]linkWithStats, len(links))
+	stats.mu.Lock()
+	for i, link := range links {
+		linksWithStats[i] = linkWithStats{Link: link, NumClicks: stats.clicks[link.Short]}
+	}
+	stats.mu.Unlock()
+
+	searchTmpl.Execute(w, linksWithStats)
 }
 
 type expandEnv struct {
