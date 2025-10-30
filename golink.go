@@ -30,6 +30,7 @@ import (
 	texttemplate "text/template"
 	"time"
 
+	"github.com/Masterminds/sprig/v3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/net/xsrftoken"
@@ -743,14 +744,46 @@ func (e expandEnv) User() (string, error) {
 	return e.user, nil
 }
 
-var expandFuncMap = texttemplate.FuncMap{
-	"PathEscape":  url.PathEscape,
-	"QueryEscape": url.QueryEscape,
-	"TrimPrefix":  strings.TrimPrefix,
-	"TrimSuffix":  strings.TrimSuffix,
-	"ToLower":     strings.ToLower,
-	"ToUpper":     strings.ToUpper,
-	"Match":       regexMatch,
+var expandFuncMap texttemplate.FuncMap
+
+func init() {
+	expandFuncMap = sprig.FuncMap()
+
+	// custom additions
+	expandFuncMap["regexReplaceAllWithTemplate"] = regexReplaceAllWithTemplate
+	expandFuncMap["PathUnescape"] = url.PathUnescape
+	expandFuncMap["QueryUnescape"] = url.QueryUnescape
+
+	// from upstream
+	expandFuncMap["PathEscape"] = url.PathEscape
+	expandFuncMap["QueryEscape"] = url.QueryEscape
+	expandFuncMap["TrimPrefix"] = strings.TrimPrefix
+	expandFuncMap["TrimSuffix"] = strings.TrimSuffix
+	expandFuncMap["ToLower"] = strings.ToLower
+	expandFuncMap["ToUpper"] = strings.ToUpper
+	expandFuncMap["Match"] = regexMatch
+}
+
+func regexReplaceAllWithTemplate(pattern string, replace string, s string) (string, error) {
+	tmpl, err := texttemplate.New("").Funcs(expandFuncMap).Parse(replace)
+	if err != nil {
+		return "", err
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return "", err
+	}
+	res := re.ReplaceAllStringFunc(s, func(match string) string {
+		var builder strings.Builder
+		if expandErr := tmpl.Execute(&builder, match); err != nil && expandErr != nil {
+			err = expandErr
+		}
+		return builder.String()
+	})
+	if err != nil {
+		return "", nil
+	}
+	return res, nil
 }
 
 func regexMatch(pattern string, s string) bool {
