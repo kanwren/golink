@@ -58,7 +58,7 @@ Templates are provided a data structure with the following fields:
     This is the email address of the user or <code>{username}@github</code> for tailnets that use GitHub authentication.
 </ul>
 
-Templates also have access to the following template functions:
+Templates also have access to all functions from <a href="https://masterminds.github.io/sprig/">Sprig</a>, as well as the following template functions:
 
 <ul>
   <li><code>PathEscape</code> is the <a href="https://pkg.go.dev/net/url#PathEscape">url.PathEscape</a> function for escaping values inside a URL path.
