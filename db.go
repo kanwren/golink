@@ -88,7 +88,12 @@ func NewSQLiteDB(f string) (*SQLiteDB, error) {
 		return nil, err
 	}
 
-	return &SQLiteDB{db: db}, nil
+	s := &SQLiteDB{db: db}
+	if err = s.runMigrations(); err != nil {
+		return nil, err
+	}
+
+	return s, nil
 }
 
 // Now returns the current time.
@@ -268,4 +273,63 @@ func (s *SQLiteDB) DeleteStats(short string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *SQLiteDB) runMigrations() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.db.Exec("CREATE TABLE IF NOT EXISTS Migrations (ID TEXT PRIMARY KEY)"); err != nil {
+		return err
+	}
+
+	type migration struct {
+		id, migration string
+	}
+
+	migrations := []migration{}
+
+	for _, m := range migrations {
+		if err := s.runMigration(m.id, m.migration); err != nil {
+			return fmt.Errorf("migration %q failed: %w", m.id, err)
+		}
+	}
+
+	return nil
+}
+
+func (s *SQLiteDB) runMigration(id string, migration string) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		var res string
+		row := tx.QueryRow("SELECT ID FROM Migrations WHERE ID = ?1 LIMIT 1", id)
+		err := row.Scan(&res)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			return nil
+		}
+
+		_, err = tx.Exec(migration)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.Exec("INSERT INTO Migrations VALUES (?)", id)
+		return err
+	})
+}
+
+func (s *SQLiteDB) withTx(f func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	err = f(tx)
+	if err != nil {
+		err = tx.Rollback()
+	} else {
+		err = tx.Commit()
+	}
+	return err
 }
