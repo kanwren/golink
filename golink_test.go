@@ -391,8 +391,8 @@ func TestServeExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Save(&Link{Short: "a", Owner: "a@example.com"})
-	db.Save(&Link{Short: "foo", Owner: "foo@example.com"})
+	db.Save(&Link{Short: "a", Owner: "a@example.com", Type: InternalLink})
+	db.Save(&Link{Short: "foo", Owner: "foo@example.com", Type: PublicLink})
 	db.Save(&Link{Short: "link-owned-by-tagged-devices", Long: "/before", Owner: "tagged-devices"})
 
 	click := func(id string) {
@@ -416,9 +416,9 @@ func TestServeExport(t *testing.T) {
 	if want := http.StatusOK; w.Code != want {
 		t.Errorf("serveExport = %d; want %d", w.Code, want)
 	}
-	wantOutput := `{"Short":"a","Long":"","Created":"0001-01-01T00:00:00Z","LastEdit":"0001-01-01T00:00:00Z","Owner":"a@example.com"}
-{"Short":"foo","Long":"","Created":"0001-01-01T00:00:00Z","LastEdit":"0001-01-01T00:00:00Z","Owner":"foo@example.com"}
-{"Short":"link-owned-by-tagged-devices","Long":"/before","Created":"0001-01-01T00:00:00Z","LastEdit":"0001-01-01T00:00:00Z","Owner":"tagged-devices"}
+	wantOutput := `{"Short":"a","Long":"","Created":"0001-01-01T00:00:00Z","LastEdit":"0001-01-01T00:00:00Z","Owner":"a@example.com","Type":"internal"}
+{"Short":"foo","Long":"","Created":"0001-01-01T00:00:00Z","LastEdit":"0001-01-01T00:00:00Z","Owner":"foo@example.com","Type":"public"}
+{"Short":"link-owned-by-tagged-devices","Long":"/before","Created":"0001-01-01T00:00:00Z","LastEdit":"0001-01-01T00:00:00Z","Owner":"tagged-devices","Type":"internal"}
 `
 	if got := w.Body.String(); got != wantOutput {
 		t.Errorf("serveExport = %v; want %v", got, wantOutput)
@@ -714,7 +714,7 @@ func TestResolveLink(t *testing.T) {
 		name := "golink " + tt.link
 		t.Run(name, func(t *testing.T) {
 			u := must.Get(url.Parse(tt.link))
-			got, err := resolveLink(u)
+			got, err := resolveLink(u, false)
 			if err != nil {
 				t.Error(err)
 			}

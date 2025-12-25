@@ -1,0 +1,7 @@
+{{ define "main" }}
+<article class="prose max-w-5xl">
+    <p>This is the public proxy for the internal golink service.</p>
+
+    {{with .PrivateURL}}<p>Go to <a href="{{.}}" class="text-blue-600 hover:underline">{{go}}/</a> for the internal service (make sure you're on Tailscale).</p>{{end}}
+</article>
+{{ end }}

@@ -56,6 +56,7 @@ Templates are provided a data structure with the following fields:
   <li><code>.Now</code> is a <a href="https://pkg.go.dev/time#Time">time.Time</a> value representing the current date and time.
   <li><code>.User</code> is the current user resolving the link.
     This is the email address of the user or <code>{username}@github</code> for tailnets that use GitHub authentication.
+  <li><code>.Public</code> is whether or not this link is currently being resolved from the public resolver, if enabled.</li>
 </ul>
 
 Templates also have access to all functions from <a href="https://masterminds.github.io/sprig/">Sprig</a>, as well as the following template functions:

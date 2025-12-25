@@ -4,6 +4,7 @@
 package golink
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -30,6 +31,59 @@ type Link struct {
 	Created  time.Time
 	LastEdit time.Time // when the link was last edited
 	Owner    string    // user@domain
+	Type     LinkType
+}
+
+type LinkType int
+
+const (
+	InternalLink LinkType = iota
+	PublicLink
+)
+
+func (l LinkType) Public() bool {
+	switch l {
+	case PublicLink:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l LinkType) String() string {
+	switch l {
+	case InternalLink:
+		return "internal"
+	case PublicLink:
+		return "public"
+	default:
+		return "<invalid>"
+	}
+}
+
+var invalidLinkType = errors.New("invalid link type")
+
+func (l LinkType) MarshalJSON() ([]byte, error) {
+	switch l {
+	case InternalLink:
+		return []byte(`"internal"`), nil
+	case PublicLink:
+		return []byte(`"public"`), nil
+	default:
+		return []byte(`"<invalid>"`), invalidLinkType
+	}
+}
+
+func (l *LinkType) UnmarshalJSON(data []byte) error {
+	switch {
+	case bytes.Equal(data, []byte(`"internal"`)):
+		*l = InternalLink
+	case bytes.Equal(data, []byte(`"public"`)):
+		*l = PublicLink
+	default:
+		return invalidLinkType
+	}
+	return nil
 }
 
 // ClickStats is the number of clicks a set of links have received in a given
@@ -111,14 +165,14 @@ func (s *SQLiteDB) LoadAll() ([]*Link, error) {
 	defer s.mu.RUnlock()
 
 	var links []*Link
-	rows, err := s.db.Query("SELECT Short, Long, Created, LastEdit, Owner FROM Links")
+	rows, err := s.db.Query("SELECT Short, Long, Created, LastEdit, Owner, Type FROM Links")
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		link := new(Link)
 		var created, lastEdit int64
-		err := rows.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner)
+		err := rows.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner, &link.Type)
 		if err != nil {
 			return nil, err
 		}
@@ -140,8 +194,8 @@ func (s *SQLiteDB) Load(short string) (*Link, error) {
 
 	link := new(Link)
 	var created, lastEdit int64
-	row := s.db.QueryRow("SELECT Short, Long, Created, LastEdit, Owner FROM Links WHERE ID = ?1 LIMIT 1", linkID(short))
-	err := row.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner)
+	row := s.db.QueryRow("SELECT Short, Long, Created, LastEdit, Owner, Type FROM Links WHERE ID = ?1 LIMIT 1", linkID(short))
+	err := row.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner, &link.Type)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			err = fs.ErrNotExist
@@ -178,7 +232,7 @@ func (s *SQLiteDB) Save(link *Link) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.db.Exec("INSERT OR REPLACE INTO Links (ID, Short, Long, Created, LastEdit, Owner) VALUES (?, ?, ?, ?, ?, ?)", linkID(link.Short), link.Short, link.Long, link.Created.Unix(), link.LastEdit.Unix(), link.Owner)
+	result, err := s.db.Exec("INSERT OR REPLACE INTO Links (ID, Short, Long, Created, LastEdit, Owner, Type) VALUES (?, ?, ?, ?, ?, ?, ?)", linkID(link.Short), link.Short, link.Long, link.Created.Unix(), link.LastEdit.Unix(), link.Owner, link.Type)
 	if err != nil {
 		return err
 	}
@@ -283,14 +337,14 @@ func (s *SQLiteDB) GetLinksByOwner(owner string) ([]*Link, error) {
 	defer s.mu.RUnlock()
 
 	var links []*Link
-	rows, err := s.db.Query("SELECT Short, Long, Created, LastEdit, Owner FROM Links WHERE LOWER(Owner) = LOWER(?)", owner)
+	rows, err := s.db.Query("SELECT Short, Long, Created, LastEdit, Owner, Type FROM Links WHERE LOWER(Owner) = LOWER(?)", owner)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		link := new(Link)
 		var created, lastEdit int64
-		err := rows.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner)
+		err := rows.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner, &link.Type)
 		if err != nil {
 			return nil, err
 		}
