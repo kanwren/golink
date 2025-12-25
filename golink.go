@@ -175,7 +175,7 @@ func Run() error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		dst, err := resolveLink(u)
+		dst, err := resolveLink(u, false)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -701,7 +701,7 @@ func serveGo(w http.ResponseWriter, r *http.Request) {
 	stats.mu.Unlock()
 
 	cu, _ := currentUser(r)
-	env := expandEnv{Now: time.Now().UTC(), Path: remainder, user: cu.login, query: r.URL.Query()}
+	env := expandEnv{Now: time.Now().UTC(), Path: remainder, Public: false, user: cu.login, query: r.URL.Query()}
 	target, err := expandLink(link.Long, env)
 	if err != nil {
 		log.Printf("expanding %q: %v", link.Long, err)
@@ -746,6 +746,11 @@ func serveGoPublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !link.Public {
+		servePublicLinkNotFound(w, r)
+		return
+	}
+
 	clickCounter.WithLabelValues(link.Short).Inc()
 
 	stats.mu.Lock()
@@ -760,10 +765,11 @@ func serveGoPublic(w http.ResponseWriter, r *http.Request) {
 	stats.mu.Unlock()
 
 	env := expandEnv{
-		Now:   time.Time{},
-		Path:  remainder,
-		user:  "",
-		query: r.URL.Query(),
+		Now:    time.Time{},
+		Path:   remainder,
+		Public: true,
+		user:   "",
+		query:  r.URL.Query(),
 	}
 	target, err := expandLink(link.Long, env)
 	if err != nil {
@@ -859,6 +865,10 @@ type expandEnv struct {
 	// Path is the remaining path after short name.  For example, in
 	// "http://go/who/amelie", Path is "amelie".
 	Path string
+
+	// Public is whether or not this resolution is being made from the public
+	// resolver or not.
+	Public bool
 
 	// user is the current user, if any.
 	// For example, "foo@example.com" or "foo@github".
@@ -1296,7 +1306,7 @@ func restoreLastSnapshot() error {
 	return bs.Err()
 }
 
-func resolveLink(link *url.URL) (*url.URL, error) {
+func resolveLink(link *url.URL, public bool) (*url.URL, error) {
 	path := link.Path
 
 	// if link was specified as "go/name", it will parse with no scheme or host.
@@ -1310,10 +1320,13 @@ func resolveLink(link *url.URL) (*url.URL, error) {
 	if err != nil {
 		return nil, err
 	}
-	dst, err := expandLink(l.Long, expandEnv{Now: time.Now().UTC(), Path: remainder})
+	if public && !l.Public {
+		return nil, fs.ErrNotExist
+	}
+	dst, err := expandLink(l.Long, expandEnv{Now: time.Now().UTC(), Path: remainder, Public: public})
 	if err == nil {
 		if dst.Host == "" || dst.Host == *hostname {
-			dst, err = resolveLink(dst)
+			dst, err = resolveLink(dst, public)
 		}
 	}
 	return dst, err
