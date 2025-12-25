@@ -69,6 +69,7 @@ var (
 	resolveFromBackup = flag.String("resolve-from-backup", "", "resolve a link from snapshot file and exit")
 	allowUnknownUsers = flag.Bool("allow-unknown-users", false, "allow unknown users to save links")
 	readonly          = flag.Bool("readonly", false, "start golink server in read-only mode")
+	public            = flag.String("public", "", "Expose only publicly-shared links via HTTP on this addr")
 )
 
 var stats struct {
@@ -184,6 +185,24 @@ func Run() error {
 
 	// flush stats periodically
 	go flushStatsLoop()
+
+	// Serve public resolver
+	if *public != "" {
+		httpListener, err := net.Listen("tcp", *public)
+		if err != nil {
+			return err
+		}
+		log.Println("Listening on " + *public)
+		publicServer := http.Server{
+			Handler: serveHandlerPublic(),
+		}
+		go func() {
+			log.Printf("Serving public resolver on http://%s/ ...", *public)
+			if err := publicServer.Serve(httpListener); err != nil {
+				log.Fatal(err)
+			}
+		}()
+	}
 
 	if *dev != "" {
 		// override default hostname for dev mode
@@ -504,6 +523,18 @@ func serveHandler() http.Handler {
 	})
 }
 
+func serveHandlerPublic() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/.static/", http.StripPrefix("/.", http.FileServer(http.FS(embeddedFS))))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/.") {
+			serveGoPublic(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
 func serveHome(w http.ResponseWriter, r *http.Request, short string, similar []string) {
 	var clicks []visitData
 	var similarLinks []similarLink
@@ -686,6 +717,76 @@ func serveGo(w http.ResponseWriter, r *http.Request) {
 	// Instead, manually set status and Location header.
 	w.Header().Set("Location", target.String())
 	w.WriteHeader(http.StatusFound)
+}
+
+func serveGoPublic(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		servePublicLandingPage(w, r)
+		return
+	}
+
+	short, remainder, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	short, _ = cleanShort(short)
+	short = linkID(short)
+
+	if short == "" {
+		servePublicLinkNotFound(w, r)
+		return
+	}
+
+	link, err := db.Load(short)
+	if errors.Is(err, fs.ErrNotExist) {
+		clickNotFound.WithLabelValues(short).Inc()
+		servePublicLinkNotFound(w, r)
+		return
+	} else if err != nil {
+		clickNotFound.WithLabelValues(short).Inc()
+		log.Printf("serving %q: %v", short, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	clickCounter.WithLabelValues(link.Short).Inc()
+
+	stats.mu.Lock()
+	if stats.clicks == nil {
+		stats.clicks = make(ClickStats)
+	}
+	stats.clicks[link.Short]++
+	if stats.dirty == nil {
+		stats.dirty = make(ClickStats)
+	}
+	stats.dirty[link.Short]++
+	stats.mu.Unlock()
+
+	env := expandEnv{
+		Now:   time.Time{},
+		Path:  remainder,
+		user:  "",
+		query: r.URL.Query(),
+	}
+	target, err := expandLink(link.Long, env)
+	if err != nil {
+		log.Printf("expanding %q: %v", link.Long, err)
+		if errors.Is(err, errNoUser) {
+			http.Error(w, "link requires a valid user", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Location", target.String())
+	w.WriteHeader(http.StatusFound)
+}
+
+func servePublicLandingPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func servePublicLinkNotFound(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "This link was not found, or is not publically available", http.StatusNotFound)
 }
 
 // acceptHTML returns whether the request can accept a text/html response.
