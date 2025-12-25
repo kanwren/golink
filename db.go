@@ -28,6 +28,7 @@ type Link struct {
 	Created  time.Time
 	LastEdit time.Time // when the link was last edited
 	Owner    string    // user@domain
+	Public   bool      // should this link be publically resolvable?
 }
 
 // ClickStats is the number of clicks a set of links have received in a given
@@ -109,14 +110,14 @@ func (s *SQLiteDB) LoadAll() ([]*Link, error) {
 	defer s.mu.RUnlock()
 
 	var links []*Link
-	rows, err := s.db.Query("SELECT Short, Long, Created, LastEdit, Owner FROM Links")
+	rows, err := s.db.Query("SELECT Short, Long, Created, LastEdit, Owner, Public FROM Links")
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		link := new(Link)
 		var created, lastEdit int64
-		err := rows.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner)
+		err := rows.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner, &link.Public)
 		if err != nil {
 			return nil, err
 		}
@@ -138,8 +139,8 @@ func (s *SQLiteDB) Load(short string) (*Link, error) {
 
 	link := new(Link)
 	var created, lastEdit int64
-	row := s.db.QueryRow("SELECT Short, Long, Created, LastEdit, Owner FROM Links WHERE ID = ?1 LIMIT 1", linkID(short))
-	err := row.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner)
+	row := s.db.QueryRow("SELECT Short, Long, Created, LastEdit, Owner, Public FROM Links WHERE ID = ?1 LIMIT 1", linkID(short))
+	err := row.Scan(&link.Short, &link.Long, &created, &lastEdit, &link.Owner, &link.Public)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			err = fs.ErrNotExist
@@ -176,7 +177,7 @@ func (s *SQLiteDB) Save(link *Link) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	result, err := s.db.Exec("INSERT OR REPLACE INTO Links (ID, Short, Long, Created, LastEdit, Owner) VALUES (?, ?, ?, ?, ?, ?)", linkID(link.Short), link.Short, link.Long, link.Created.Unix(), link.LastEdit.Unix(), link.Owner)
+	result, err := s.db.Exec("INSERT OR REPLACE INTO Links (ID, Short, Long, Created, LastEdit, Owner, Public) VALUES (?, ?, ?, ?, ?, ?, ?)", linkID(link.Short), link.Short, link.Long, link.Created.Unix(), link.LastEdit.Unix(), link.Owner, link.Public)
 	if err != nil {
 		return err
 	}
@@ -287,7 +288,15 @@ func (s *SQLiteDB) runMigrations() error {
 		id, migration string
 	}
 
-	migrations := []migration{}
+	migrations := []migration{
+		{
+			id: "0001-Links-AddPublicCol",
+			migration: `
+ALTER TABLE Links
+ADD Public BOOLEAN NOT NULL
+DEFAULT 0;`,
+		},
+	}
 
 	for _, m := range migrations {
 		if err := s.runMigration(m.id, m.migration); err != nil {
