@@ -7,11 +7,13 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	_ "embed"
+	"embed"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -88,7 +90,12 @@ func NewSQLiteDB(f string) (*SQLiteDB, error) {
 		return nil, err
 	}
 
-	return &SQLiteDB{db: db}, nil
+	s := &SQLiteDB{db: db}
+	if err = s.runMigrations(); err != nil {
+		return nil, err
+	}
+
+	return s, nil
 }
 
 // Now returns the current time.
@@ -292,4 +299,73 @@ func (s *SQLiteDB) GetLinksByOwner(owner string) ([]*Link, error) {
 		links = append(links, link)
 	}
 	return links, rows.Err()
+}
+
+//go:embed migrations/*.up.sql
+var migrations embed.FS
+
+func (s *SQLiteDB) runMigrations() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.db.Exec("CREATE TABLE IF NOT EXISTS Migrations (ID TEXT PRIMARY KEY)"); err != nil {
+		return err
+	}
+
+	migrationFiles, err := migrations.ReadDir("migrations")
+	if err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	for _, migrationFile := range migrationFiles {
+		name := migrationFile.Name()
+		id, _, _ := strings.Cut(name, ".")
+		contents, err := migrations.ReadFile(path.Join("migrations", name))
+		if err != nil {
+			return fmt.Errorf("migration %q failed: %w", id, err)
+		}
+		if err := s.runMigration(id, string(contents)); err != nil {
+			return fmt.Errorf("migration %q failed: %w", id, err)
+		}
+	}
+
+	return nil
+}
+
+func (s *SQLiteDB) runMigration(id string, migration string) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		var res string
+		row := tx.QueryRow("SELECT ID FROM Migrations WHERE ID = ?1 LIMIT 1", id)
+		err := row.Scan(&res)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			return nil
+		}
+
+		log.Printf("running migration: %s", id)
+
+		_, err = tx.Exec(migration)
+		if err != nil {
+			return err
+		}
+
+		_, err = tx.Exec("INSERT INTO Migrations VALUES (?)", id)
+		return err
+	})
+}
+
+func (s *SQLiteDB) withTx(f func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	err = f(tx)
+	if err != nil {
+		err = tx.Rollback()
+	} else {
+		err = tx.Commit()
+	}
+	return err
 }
