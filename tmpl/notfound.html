@@ -1,0 +1,7 @@
+{{ define "main" }}
+<h2 class="text-xl font-bold pb-2">Link not found</h2>
+
+<p>That link does not exist, or is not publically available.</p>
+
+<p>Did you mean to go to <a class="text-blue-600 hover:underline" href="{{.Alternative}}">{{go}}/{{.Short}}</a>?</p>
+{{ end }}

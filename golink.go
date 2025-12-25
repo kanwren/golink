@@ -115,6 +115,12 @@ type Options struct {
 	// tsnet's internal proxy are trusted for requests from loopback.
 	ServiceName string
 
+	// Expose only publicly-shared links via HTTP on this addr
+	Public string
+
+	// The hostname of the public resolver
+	PublicHostname string
+
 	// Dev runs the server in development mode: requests are authenticated as
 	// a fake user without consulting the LocalAPI.
 	Dev bool
@@ -132,6 +138,8 @@ type Server struct {
 	readonly          bool
 	allowUnknownUsers bool
 	serviceName       string
+	public            string
+	publicHostname    string
 	dev               bool
 	verbose           bool
 
@@ -148,6 +156,12 @@ type Server struct {
 	// homeTmpl is the template used by the http://go/ index page where you can
 	// create or edit links.
 	homeTmpl *template.Template
+
+	// publicLandingTmpl is the template used for the public landing page
+	publicLandingTmpl *template.Template
+
+	// publicNotFoundTmpl is the template used for 404s on the public resolver
+	publicNotFoundTmpl *template.Template
 
 	// detailTmpl is the template used by the link detail page to view or edit links.
 	detailTmpl *template.Template
@@ -194,6 +208,8 @@ func New(opts Options) (*Server, error) {
 		readonly:          opts.ReadOnly,
 		allowUnknownUsers: opts.AllowUnknownUsers,
 		serviceName:       opts.ServiceName,
+		public:            opts.Public,
+		publicHostname:    opts.PublicHostname,
 		dev:               opts.Dev,
 		verbose:           opts.Verbose,
 	}
@@ -206,6 +222,8 @@ func New(opts Options) (*Server, error) {
 	s.xsrfKey = base64.StdEncoding.EncodeToString(b)
 
 	s.homeTmpl = s.newTemplate("base.html", "home.html")
+	s.publicLandingTmpl = s.newTemplate("public.html", "landing.html")
+	s.publicNotFoundTmpl = s.newTemplate("public.html", "notfound.html")
 	s.detailTmpl = s.newTemplate("base.html", "detail.html")
 	s.successTmpl = s.newTemplate("base.html", "success.html")
 	s.helpTmpl = s.newTemplate("base.html", "help.html")
@@ -251,6 +269,8 @@ func Run(ctx context.Context) error {
 		readonly          = flag.Bool("readonly", false, "start golink server in read-only mode")
 		advertiseTags     = flag.String("advertise-tags", os.Getenv("TS_ADVERTISE_TAGS"), "comma-separated list of ACL tags to advertise (e.g. tag:golink)")
 		serviceName       = flag.String("register-as-service", envknob.String("TS_SERVICE_NAME"), "register as a Tailscale Service (e.g., svc:golink); requires tagged node")
+		public            = flag.String("public", "", "Expose only publicly-shared links via HTTP on this addr")
+		publicHostname    = flag.String("public-hostname", "", "The hostname of the public resolver")
 	)
 	flag.Parse()
 
@@ -304,6 +324,8 @@ func Run(ctx context.Context) error {
 		ReadOnly:          *readonly,
 		AllowUnknownUsers: *allowUnknownUsers,
 		ServiceName:       *serviceName,
+		Public:            *public,
+		PublicHostname:    *publicHostname,
 		Dev:               devMode(),
 		Verbose:           *verbose,
 	})
@@ -317,7 +339,7 @@ func Run(ctx context.Context) error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		dst, err := s.resolveLink(u)
+		dst, err := s.resolveLink(u, false)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -407,6 +429,18 @@ out:
 	httpHandler := s.Handler()
 
 	// Service registration mode: use ListenService instead of standard listeners
+	var servers []listenerServer
+
+	if s.public != "" {
+		localHTTPListener, err := net.Listen("tcp", s.public)
+		if err != nil {
+			return fmt.Errorf("failed to start public resolver: %w", err)
+		}
+		log.Printf("Listening on %s", s.public)
+		log.Printf("Serving public resolver on http://%s/ ...", s.publicHostname)
+		servers = append(servers, listenerServer{srv: &http.Server{Handler: s.serveHandlerPublic(fqdn)}, ln: localHTTPListener})
+	}
+
 	if *serviceName != "" {
 		if !strings.HasPrefix(*serviceName, "svc:") {
 			return fmt.Errorf("service name must start with 'svc:' prefix, got: %q", *serviceName)
@@ -426,31 +460,29 @@ out:
 
 		httpsHandler := HSTS(httpHandler)
 		log.Printf("Serving https://%s/ as service %s ...", fqdn, *serviceName)
-		return serveHTTP(ctx, listenerServer{srv: &http.Server{Handler: httpsHandler}, ln: serviceListener})
-	}
+		servers = append(servers, listenerServer{srv: &http.Server{Handler: httpsHandler}, ln: serviceListener})
+	} else {
+		if enableTLS {
+			httpsHandler := HSTS(httpHandler)
+			httpHandler = RedirectHandler(fqdn)
 
-	// Standard mode: use regular listeners
-	var servers []listenerServer
-	if enableTLS {
-		httpsHandler := HSTS(httpHandler)
-		httpHandler = RedirectHandler(fqdn)
+			httpsListener, err := ts.ListenTLS("tcp", ":443")
+			if err != nil {
+				return err
+			}
+			log.Println("Listening on :443")
+			log.Printf("Serving https://%s/ ...", fqdn)
+			servers = append(servers, listenerServer{srv: &http.Server{Handler: httpsHandler}, ln: httpsListener})
+		}
 
-		httpsListener, err := ts.ListenTLS("tcp", ":443")
+		httpListener, err := ts.Listen("tcp", ":80")
 		if err != nil {
 			return err
 		}
-		log.Println("Listening on :443")
-		log.Printf("Serving https://%s/ ...", fqdn)
-		servers = append(servers, listenerServer{srv: &http.Server{Handler: httpsHandler}, ln: httpsListener})
+		log.Println("Listening on :80")
+		log.Printf("Serving http://%s/ ...", *hostname)
+		servers = append(servers, listenerServer{srv: &http.Server{Handler: httpHandler}, ln: httpListener})
 	}
-
-	httpListener, err := ts.Listen("tcp", ":80")
-	if err != nil {
-		return err
-	}
-	log.Println("Listening on :80")
-	log.Printf("Serving http://%s/ ...", *hostname)
-	servers = append(servers, listenerServer{srv: &http.Server{Handler: httpHandler}, ln: httpListener})
 
 	return serveHTTP(ctx, servers...)
 }
@@ -540,6 +572,18 @@ type deleteData struct {
 	Short string
 	Long  string
 	XSRF  string
+	Type  LinkType
+}
+
+// publicLandingData is the data used by publicLandingTmpl
+type publicLandingData struct {
+	PrivateURL string
+}
+
+// publicNotFoundData is the data used by publicNotFoundTmpl
+type publicNotFoundData struct {
+	Short       string
+	Alternative string
 }
 
 func init() {
@@ -557,6 +601,9 @@ func (s *Server) tmplFuncs() template.FuncMap {
 				return defaultHostname
 			}
 			return s.hostname
+		},
+		"publichost": func() string {
+			return s.publicHostname
 		},
 	}
 }
@@ -725,6 +772,18 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
+func (s *Server) serveHandlerPublic(fqdn string) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/.static/", http.StripPrefix("/.", http.FileServer(http.FS(embeddedFS))))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/.") {
+			s.serveGoPublic(fqdn, w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) serveHome(w http.ResponseWriter, r *http.Request, short string, similar []string) {
 	var clicks []visitData
 	var similarLinks []similarLink
@@ -869,7 +928,7 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request) {
 	s.stats.mu.Unlock()
 
 	cu, _ := s.currentUser(r)
-	env := expandEnv{Now: time.Now().UTC(), Path: remainder, user: cu.login, query: r.URL.Query()}
+	env := expandEnv{Now: time.Now().UTC(), Path: remainder, Public: false, user: cu.login, query: r.URL.Query()}
 	target, err := expandLink(link.Long, env)
 	if err != nil {
 		log.Printf("expanding %q: %v", link.Long, err)
@@ -885,6 +944,89 @@ func (s *Server) serveGo(w http.ResponseWriter, r *http.Request) {
 	// Instead, manually set status and Location header.
 	w.Header().Set("Location", target.String())
 	w.WriteHeader(http.StatusFound)
+}
+
+func (s *Server) serveGoPublic(fqdn string, w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		s.servePublicLandingPage(fqdn, w, r)
+		return
+	}
+
+	short, remainder, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	short, _ = cleanShort(short)
+	short = linkID(short)
+
+	if short == "" {
+		s.servePublicLinkNotFound(fqdn, w, r)
+		return
+	}
+
+	link, err := s.db.Load(short)
+	if errors.Is(err, fs.ErrNotExist) {
+		clickNotFound.WithLabelValues(short).Inc()
+		s.servePublicLinkNotFound(fqdn, w, r)
+		return
+	} else if err != nil {
+		clickNotFound.WithLabelValues(short).Inc()
+		log.Printf("serving %q: %v", short, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !link.Type.Public() {
+		s.servePublicLinkNotFound(fqdn, w, r)
+		return
+	}
+
+	clickCounter.WithLabelValues(link.Short).Inc()
+
+	s.stats.mu.Lock()
+	if s.stats.clicks == nil {
+		s.stats.clicks = make(ClickStats)
+	}
+	s.stats.clicks[link.Short]++
+	if s.stats.dirty == nil {
+		s.stats.dirty = make(ClickStats)
+	}
+	s.stats.dirty[link.Short]++
+	s.stats.mu.Unlock()
+
+	env := expandEnv{
+		Now:    time.Time{},
+		Path:   remainder,
+		Public: true,
+		user:   "",
+		query:  r.URL.Query(),
+	}
+	target, err := expandLink(link.Long, env)
+	if err != nil {
+		log.Printf("expanding %q: %v", link.Long, err)
+		if errors.Is(err, errNoUser) {
+			http.Error(w, "link requires a valid user", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Location", target.String())
+	w.WriteHeader(http.StatusFound)
+}
+
+func (s *Server) servePublicLandingPage(fqdn string, w http.ResponseWriter, r *http.Request) {
+	s.publicLandingTmpl.Execute(w, publicLandingData{
+		PrivateURL: "https://" + fqdn,
+	})
+}
+
+func (s *Server) servePublicLinkNotFound(fqdn string, w http.ResponseWriter, r *http.Request) {
+	short, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	r.URL.Scheme = "https"
+	r.URL.Host = fqdn
+	s.publicNotFoundTmpl.Execute(w, publicNotFoundData{
+		Short:       short,
+		Alternative: r.URL.String(),
+	})
 }
 
 func cleanShort(short string) (string, bool) {
@@ -992,6 +1134,10 @@ type expandEnv struct {
 	// Path is the remaining path after short name.  For example, in
 	// "http://go/who/amelie", Path is "amelie".
 	Path string
+
+	// Public is whether or not this resolution is being made from the public
+	// resolver.
+	Public bool
 
 	// user is the current user, if any.
 	// For example, "foo@example.com" or "foo@github".
@@ -1286,6 +1432,7 @@ func (s *Server) serveDelete(w http.ResponseWriter, r *http.Request) {
 		Short: link.Short,
 		Long:  link.Long,
 		XSRF:  xsrftoken.Generate(s.xsrfKey, cu.login, newShortName),
+		Type:  link.Type,
 	})
 }
 
@@ -1366,6 +1513,11 @@ func (s *Server) serveSave(w http.ResponseWriter, r *http.Request) {
 		owner = cu.login
 	}
 
+	linkType := InternalLink
+	if r.FormValue("public") == "public" {
+		linkType = PublicLink
+	}
+
 	now := time.Now().UTC()
 	newLink := false
 	if link == nil {
@@ -1379,6 +1531,7 @@ func (s *Server) serveSave(w http.ResponseWriter, r *http.Request) {
 	link.Long = long
 	link.LastEdit = now
 	link.Owner = owner
+	link.Type = linkType
 	if err := s.db.Save(link); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1511,7 +1664,7 @@ func (s *Server) restoreSnapshot(snapshot []byte) error {
 	return bs.Err()
 }
 
-func (s *Server) resolveLink(link *url.URL) (*url.URL, error) {
+func (s *Server) resolveLink(link *url.URL, public bool) (*url.URL, error) {
 	path := link.Path
 
 	// if link was specified as "go/name", it will parse with no scheme or host.
@@ -1525,10 +1678,13 @@ func (s *Server) resolveLink(link *url.URL) (*url.URL, error) {
 	if err != nil {
 		return nil, err
 	}
-	dst, err := expandLink(l.Long, expandEnv{Now: time.Now().UTC(), Path: remainder})
+	if public && !l.Type.Public() {
+		return nil, fs.ErrNotExist
+	}
+	dst, err := expandLink(l.Long, expandEnv{Now: time.Now().UTC(), Path: remainder, Public: public})
 	if err == nil {
 		if dst.Host == "" || dst.Host == s.hostname {
-			dst, err = s.resolveLink(dst)
+			dst, err = s.resolveLink(dst, public)
 		}
 	}
 	return dst, err
