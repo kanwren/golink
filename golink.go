@@ -70,6 +70,7 @@ var (
 	allowUnknownUsers = flag.Bool("allow-unknown-users", false, "allow unknown users to save links")
 	readonly          = flag.Bool("readonly", false, "start golink server in read-only mode")
 	public            = flag.String("public", "", "Expose only publicly-shared links via HTTP on this addr")
+	publicHostname    = flag.String("public-hostname", "", "The hostname of the public resolver")
 )
 
 var stats struct {
@@ -340,9 +341,10 @@ type homeData struct {
 
 // deleteData is the data used by deleteTmpl.
 type deleteData struct {
-	Short string
-	Long  string
-	XSRF  string
+	Short  string
+	Long   string
+	XSRF   string
+	Public bool
 }
 
 var xsrfKey string
@@ -372,6 +374,9 @@ var tmplFuncs = template.FuncMap{
 			return defaultHostname
 		}
 		return *hostname
+	},
+	"publichost": func() string {
+		return *publicHostname
 	},
 }
 
@@ -1091,9 +1096,10 @@ func serveDelete(w http.ResponseWriter, r *http.Request) {
 	deleteLinkStats(link)
 
 	deleteTmpl.Execute(w, deleteData{
-		Short: link.Short,
-		Long:  link.Long,
-		XSRF:  xsrftoken.Generate(xsrfKey, cu.login, newShortName),
+		Short:  link.Short,
+		Long:   link.Long,
+		XSRF:   xsrftoken.Generate(xsrfKey, cu.login, newShortName),
+		Public: link.Public,
 	})
 }
 
@@ -1163,6 +1169,8 @@ func serveSave(w http.ResponseWriter, r *http.Request) {
 		owner = cu.login
 	}
 
+	public := r.FormValue("public") == "public"
+
 	now := time.Now().UTC()
 	newLink := false
 	if link == nil {
@@ -1176,6 +1184,7 @@ func serveSave(w http.ResponseWriter, r *http.Request) {
 	link.Long = long
 	link.LastEdit = now
 	link.Owner = owner
+	link.Public = public
 	if err := db.Save(link); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

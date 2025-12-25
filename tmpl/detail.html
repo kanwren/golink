@@ -20,6 +20,12 @@
       <input id=owner name=owner required type=text size=25 placeholder="Owner" value="{{.Link.Owner}}" class="p-2 rounded-md border-gray-300 placeholder:text-gray-400 disabled:bg-gray-100">
 
       <dl>
+        <dt class="text-sm font-bold mt-6">Visibility</dt>
+        <dd class="flex items-center">
+          <input id="public" name="public" type="checkbox" value="public"{{if .Link.Public}} checked{{end}} class="rounded checked:bg-blue-500 focus:ring-0 focus:ring-offset-0 cursor-pointer" />
+          <label for="public" class="pl-2 text-slate-600 text-sm cursor-pointer">Make this link publically usable{{with publichost}} at <a href="https://{{.}}" class="text-blue-600 hover:underline">{{.}}</a>{{end}}</label>
+        </dd>
+
         <dt class="text-sm font-bold mt-6">Date Created</dt>
         <dd>{{.Link.Created.Format "Jan _2, 2006 3:04pm MST"}}</dd>
 
@@ -47,6 +53,9 @@
 
       <dt class="text-sm font-bold mt-6">Owner</dt>
       <dd>{{.Link.Owner}}</dd>
+
+      <dt class="text-sm font-bold mt-6">Visibility</dt>
+      <dd>{{if .Link.Public}}Public{{else}}Private{{end}}</dd>
 
       <dt class="text-sm font-bold mt-6">Date Created</dt>
       <dd>{{.Link.Created.Format "Jan _2, 2006 3:04pm MST"}}</dd>
