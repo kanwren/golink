@@ -295,6 +295,12 @@ var (
 	// create or edit links.
 	homeTmpl *template.Template
 
+	// publicLandingTmpl is the template used for the public landing page
+	publicLandingTmpl *template.Template
+
+	// publicNotFoundTmpl is the template used for 404s on the public resolver
+	publicNotFoundTmpl *template.Template
+
 	// detailTmpl is the template used by the link detail page to view or edit links.
 	detailTmpl *template.Template
 
@@ -347,6 +353,17 @@ type deleteData struct {
 	Public bool
 }
 
+// publicLandingData is the data used by publicLandingTmpl
+type publicLandingData struct {
+	PrivateURL string
+}
+
+// publicNotFoundData is the data used by publicNotFoundTmpl
+type publicNotFoundData struct {
+	Short       string
+	Alternative string
+}
+
 var xsrfKey string
 
 func init() {
@@ -357,6 +374,8 @@ func init() {
 	allTmpl = newTemplate("base.html", "all.html")
 	deleteTmpl = newTemplate("base.html", "delete.html")
 	opensearchTmpl = newTemplate("opensearch.xml")
+	publicLandingTmpl = newTemplate("public.html", "landing.html")
+	publicNotFoundTmpl = newTemplate("public.html", "notfound.html")
 
 	b := make([]byte, 24)
 	rand.Read(b)
@@ -792,12 +811,19 @@ func serveGoPublic(w http.ResponseWriter, r *http.Request) {
 }
 
 func servePublicLandingPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusNoContent)
+	publicLandingTmpl.Execute(w, publicLandingData{
+		PrivateURL: "https://go.swallow-chickadee.ts.net", // TODO: don't hardcode
+	})
 }
 
 func servePublicLinkNotFound(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "This link was not found, or is not publically available", http.StatusNotFound)
+	short, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	r.URL.Scheme = "https"
+	r.URL.Host = "go.swallow-chickadee.ts.net" // TODO: don't hardcode
+	publicNotFoundTmpl.Execute(w, publicNotFoundData{
+		Short:       short,
+		Alternative: r.URL.String(),
+	})
 }
 
 // acceptHTML returns whether the request can accept a text/html response.
