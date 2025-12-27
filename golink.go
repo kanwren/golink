@@ -187,24 +187,6 @@ func Run() error {
 	// flush stats periodically
 	go flushStatsLoop()
 
-	// Serve public resolver
-	if *public != "" {
-		httpListener, err := net.Listen("tcp", *public)
-		if err != nil {
-			return err
-		}
-		log.Println("Listening on " + *public)
-		publicServer := http.Server{
-			Handler: serveHandlerPublic(),
-		}
-		go func() {
-			log.Printf("Serving public resolver on http://%s/ ...", *public)
-			if err := publicServer.Serve(httpListener); err != nil {
-				log.Fatal(err)
-			}
-		}()
-	}
-
 	if *dev != "" {
 		// override default hostname for dev mode
 		if *hostname == defaultHostname {
@@ -214,6 +196,10 @@ func Run() error {
 				}
 				*hostname = fmt.Sprintf("%s:%s", h, p)
 			}
+		}
+
+		if err = startPublic(*hostname); err != nil {
+			return err
 		}
 
 		log.Printf("Running in dev mode on %s ...", *dev)
@@ -286,6 +272,33 @@ out:
 	if err := http.Serve(httpListener, httpHandler); err != nil {
 		return err
 	}
+
+	if err = startPublic(fqdn); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func startPublic(fqdn string) error {
+	if *public == "" {
+		return nil
+	}
+
+	httpListener, err := net.Listen("tcp", *public)
+	if err != nil {
+		return err
+	}
+	log.Println("Listening on " + *public)
+	publicServer := http.Server{
+		Handler: serveHandlerPublic(fqdn),
+	}
+	go func() {
+		log.Printf("Serving public resolver on http://%s/ ...", *public)
+		if err := publicServer.Serve(httpListener); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	return nil
 }
@@ -547,12 +560,12 @@ func serveHandler() http.Handler {
 	})
 }
 
-func serveHandlerPublic() http.Handler {
+func serveHandlerPublic(fqdn string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/.static/", http.StripPrefix("/.", http.FileServer(http.FS(embeddedFS))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/.") {
-			serveGoPublic(w, r)
+			serveGoPublic(fqdn, w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -743,9 +756,9 @@ func serveGo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusFound)
 }
 
-func serveGoPublic(w http.ResponseWriter, r *http.Request) {
+func serveGoPublic(fqdn string, w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
-		servePublicLandingPage(w, r)
+		servePublicLandingPage(fqdn, w, r)
 		return
 	}
 
@@ -754,14 +767,14 @@ func serveGoPublic(w http.ResponseWriter, r *http.Request) {
 	short = linkID(short)
 
 	if short == "" {
-		servePublicLinkNotFound(w, r)
+		servePublicLinkNotFound(fqdn, w, r)
 		return
 	}
 
 	link, err := db.Load(short)
 	if errors.Is(err, fs.ErrNotExist) {
 		clickNotFound.WithLabelValues(short).Inc()
-		servePublicLinkNotFound(w, r)
+		servePublicLinkNotFound(fqdn, w, r)
 		return
 	} else if err != nil {
 		clickNotFound.WithLabelValues(short).Inc()
@@ -771,7 +784,7 @@ func serveGoPublic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !link.Public {
-		servePublicLinkNotFound(w, r)
+		servePublicLinkNotFound(fqdn, w, r)
 		return
 	}
 
@@ -810,16 +823,16 @@ func serveGoPublic(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusFound)
 }
 
-func servePublicLandingPage(w http.ResponseWriter, r *http.Request) {
+func servePublicLandingPage(fqdn string, w http.ResponseWriter, r *http.Request) {
 	publicLandingTmpl.Execute(w, publicLandingData{
-		PrivateURL: "https://go.swallow-chickadee.ts.net", // TODO: don't hardcode
+		PrivateURL: "https://" + fqdn,
 	})
 }
 
-func servePublicLinkNotFound(w http.ResponseWriter, r *http.Request) {
+func servePublicLinkNotFound(fqdn string, w http.ResponseWriter, r *http.Request) {
 	short, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	r.URL.Scheme = "https"
-	r.URL.Host = "go.swallow-chickadee.ts.net" // TODO: don't hardcode
+	r.URL.Host = fqdn
 	publicNotFoundTmpl.Execute(w, publicNotFoundData{
 		Short:       short,
 		Alternative: r.URL.String(),
