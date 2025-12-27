@@ -1299,6 +1299,10 @@ select {
   align-items: center;
 }
 
+.justify-between {
+  justify-content: space-between;
+}
+
 .overflow-auto {
   overflow: auto;
 }
