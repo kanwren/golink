@@ -11,7 +11,8 @@ RUN go mod download
 
 COPY . .
 ARG TARGETOS TARGETARCH TARGETVARIANT
-RUN \
+ENV GOCACHE=/root/.cache/go-build
+RUN --mount=type=cache,target="/root/.cache/go-build" \
   if [ "${TARGETARCH}" = "arm" ] && [ -n "${TARGETVARIANT}" ]; then \
   export GOARM="${TARGETVARIANT#v}"; \
   fi; \
